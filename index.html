@@ -1,0 +1,654 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Teleprompter</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      background: #0a0a0a;
+      color: white;
+      font-family: Arial, sans-serif;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    /* ── Controls bar ── */
+    #controls {
+      background: #141414;
+      padding: 10px 16px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-shrink: 0;
+      border-bottom: 1px solid #2a2a2a;
+    }
+
+    button {
+      padding: 7px 14px;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 600;
+      transition: filter 0.15s;
+    }
+    button:hover:not(:disabled) { filter: brightness(1.15); }
+    button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    #btnLoad    { background: #2563eb; color: #fff; }
+    #btnStart   { background: #16a34a; color: #fff; }
+    #btnPause   { background: #d97706; color: #fff; display: none; }
+    #btnStop    { background: #dc2626; color: #fff; display: none; }
+    #btnDownload{ background: #7c3aed; color: #fff; display: none; }
+    #btnMirror  { background: #374151; color: #d1d5db; }
+    #btnMirror.on { background: #1d4ed8; color: #fff; }
+
+    #statusBadge {
+      padding: 4px 12px;
+      border-radius: 20px;
+      font-size: 12px;
+      font-weight: 700;
+      background: #222;
+      color: #888;
+      letter-spacing: 0.03em;
+    }
+    #statusBadge.recording { background: #b91c1c; color: #fff; animation: blink 1.4s infinite; }
+    #statusBadge.paused    { background: #b45309; color: #fff; }
+    #statusBadge.done      { background: #15803d; color: #fff; }
+
+    @keyframes blink { 0%,100%{opacity:1} 50%{opacity:.55} }
+
+    .sep { width: 1px; height: 24px; background: #2a2a2a; flex-shrink: 0; }
+
+    .speed-wrap {
+      display: flex; align-items: center; gap: 6px;
+      margin-left: auto; color: #666; font-size: 12px;
+    }
+    input[type=range] { width: 80px; accent-color: #3b82f6; }
+
+    /* ── Main area ── */
+    #main {
+      flex: 1;
+      position: relative;
+      overflow: hidden;
+    }
+
+    /* ── Teleprompter scroll area ── */
+    #scroller {
+      height: 100%;
+      overflow-y: scroll;
+      padding: 80px 16% 260px;
+      scrollbar-width: none;
+    }
+    #scroller::-webkit-scrollbar { display: none; }
+
+    #scriptText {
+      font-size: clamp(26px, 3.8vw, 54px);
+      line-height: 1.85;
+      color: #bbb;
+      text-align: center;
+    }
+
+    /* Fade overlays */
+    .fade {
+      position: absolute; left: 0; right: 0; pointer-events: none; z-index: 3;
+    }
+    #fadeTop    { top: 0;    height: 110px; background: linear-gradient(#0a0a0a, transparent); }
+    #fadeBottom { bottom: 0; height: 130px; background: linear-gradient(transparent, #0a0a0a); }
+
+    /* Center guide line */
+    #guideLine {
+      position: absolute; top: 42%; left: 8%; right: 8%; height: 2px;
+      background: rgba(59,130,246,.18); pointer-events: none; z-index: 2;
+    }
+
+    /* Word spans */
+    .w { display: inline; border-radius: 3px; padding: 0 1px; transition: color .1s, background .1s; }
+    .w.spoken  { color: #4ade80; }
+    .w.current { color: #fff; background: rgba(59,130,246,.45); }
+    .w.mistake { color: #fff; background: rgba(239,68,68,.5); }
+
+    /* Mirror mode flips only the text */
+    #main.mirrored #scriptText { transform: scaleX(-1); }
+
+    /* Progress badge */
+    #progress {
+      position: absolute; top: 10px; right: 12px;
+      background: rgba(0,0,0,.55); color: #666;
+      font-size: 11px; padding: 3px 10px; border-radius: 20px; z-index: 5;
+    }
+
+    /* Empty state */
+    #emptyState {
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      height: 100%; gap: 14px; color: #444;
+    }
+    #emptyState p { font-size: 18px; }
+    #emptyState button {
+      background: #2563eb; color: #fff;
+      padding: 10px 22px; font-size: 15px;
+    }
+
+    /* ── Webcam pip ── */
+    #pip {
+      position: absolute; bottom: 18px; right: 18px;
+      width: 210px; height: 158px;
+      border-radius: 10px; overflow: hidden;
+      border: 2px solid #2a2a2a;
+      box-shadow: 0 6px 24px rgba(0,0,0,.6);
+      cursor: move; user-select: none; z-index: 10;
+      background: #111;
+    }
+    #webcam {
+      width: 100%; height: 100%;
+      object-fit: cover;
+      transform: scaleX(-1); /* mirror self-view */
+    }
+    #recDot {
+      position: absolute; top: 7px; left: 7px;
+      width: 9px; height: 9px; border-radius: 50%;
+      background: #ef4444; display: none;
+      animation: blink .9s infinite;
+    }
+    #recDot.on { display: block; }
+    #pauseVeil {
+      position: absolute; inset: 0;
+      background: rgba(0,0,0,.52);
+      display: none; align-items: center; justify-content: center;
+      font-size: 34px;
+    }
+    #pauseVeil.on { display: flex; }
+
+    /* ── Script modal ── */
+    #modalBg {
+      display: none; position: fixed; inset: 0;
+      background: rgba(0,0,0,.78); z-index: 100;
+      align-items: center; justify-content: center;
+    }
+    #modalBg.open { display: flex; }
+    #modalBox {
+      background: #181818; border: 1px solid #333;
+      border-radius: 12px; padding: 22px;
+      width: 90%; max-width: 680px;
+    }
+    #modalBox h2 { margin-bottom: 14px; font-size: 18px; }
+    #scriptInput {
+      width: 100%; height: 280px;
+      background: #0d0d0d; color: #ddd;
+      border: 1px solid #3a3a3a; border-radius: 8px;
+      padding: 12px; font-size: 16px; line-height: 1.6;
+      resize: vertical; font-family: Arial, sans-serif;
+    }
+    .modalBtns {
+      display: flex; gap: 10px; margin-top: 14px; justify-content: flex-end;
+    }
+    #btnCancel  { background: #333; color: #ccc; }
+    #btnConfirm { background: #2563eb; color: #fff; }
+  </style>
+</head>
+<body>
+
+<!-- Controls -->
+<div id="controls">
+  <button id="btnLoad">📝 Script</button>
+  <div class="sep"></div>
+  <button id="btnStart" disabled>⏺ Record</button>
+  <button id="btnPause">⏸ Pause</button>
+  <button id="btnStop">⏹ Stop</button>
+  <button id="btnDownload">⬇ Download</button>
+  <div class="sep"></div>
+  <button id="btnMirror">⇄ Mirror</button>
+  <span id="statusBadge">Ready</span>
+  <div class="speed-wrap">
+    Scroll speed
+    <input type="range" id="speedRange" min="0.3" max="3" step="0.1" value="1">
+    <span id="speedVal">1.0×</span>
+  </div>
+</div>
+
+<!-- Main -->
+<div id="main">
+  <div id="fadeTop"    class="fade"></div>
+  <div id="guideLine"></div>
+
+  <div id="scroller">
+    <div id="emptyState">
+      <p>Paste your script to get started</p>
+      <button id="btnLoadInline">📝 Load Script</button>
+    </div>
+    <div id="scriptText" style="display:none"></div>
+  </div>
+
+  <div id="fadeBottom" class="fade"></div>
+  <div id="progress"></div>
+
+  <!-- Webcam PiP -->
+  <div id="pip">
+    <video id="webcam" autoplay muted playsinline></video>
+    <div id="recDot"></div>
+    <div id="pauseVeil">⏸</div>
+  </div>
+</div>
+
+<!-- Script modal -->
+<div id="modalBg">
+  <div id="modalBox">
+    <h2>📝 Enter Script</h2>
+    <textarea id="scriptInput" placeholder="Paste or type your script here…
+
+Hello everyone! Welcome back to my channel.
+Today I want to share something really exciting with you all.
+Make sure to like, comment, and subscribe!"></textarea>
+    <div class="modalBtns">
+      <button id="btnCancel">Cancel</button>
+      <button id="btnConfirm">Load →</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ─── State ────────────────────────────────────────────────────────────────────
+const S = {
+  words: [],          // { text, clean, el }
+  cursor: 0,          // current word index
+  recording: false,
+  paused: false,
+  manualPause: false,
+  stream: null,
+  recorder: null,
+  chunks: [],
+  recognition: null,
+  silenceTimer: null,
+  scrollSpeed: 1,
+};
+
+// ─── Element refs ─────────────────────────────────────────────────────────────
+const $ = id => document.getElementById(id);
+const E = {
+  btnLoad: $('btnLoad'), btnLoadInline: $('btnLoadInline'),
+  btnStart: $('btnStart'), btnPause: $('btnPause'),
+  btnStop: $('btnStop'), btnDownload: $('btnDownload'),
+  btnMirror: $('btnMirror'), btnCancel: $('btnCancel'), btnConfirm: $('btnConfirm'),
+  status: $('statusBadge'), progress: $('progress'),
+  scroller: $('scroller'), scriptText: $('scriptText'), emptyState: $('emptyState'),
+  webcam: $('webcam'), pip: $('pip'), recDot: $('recDot'), pauseVeil: $('pauseVeil'),
+  modalBg: $('modalBg'), scriptInput: $('scriptInput'),
+  speedRange: $('speedRange'), speedVal: $('speedVal'), main: $('main'),
+};
+
+// ─── Camera init ──────────────────────────────────────────────────────────────
+async function initCamera() {
+  try {
+    S.stream = await navigator.mediaDevices.getUserMedia({
+      video: { width: 1280, height: 720, facingMode: 'user' },
+      audio: true,
+    });
+    E.webcam.srcObject = S.stream;
+  } catch (err) {
+    setStatus('Camera blocked — check permissions', '');
+  }
+}
+
+// ─── Script loading ───────────────────────────────────────────────────────────
+function loadScript(raw) {
+  raw = raw.trim();
+  if (!raw) return;
+
+  S.words = [];
+  S.cursor = 0;
+  E.scriptText.innerHTML = '';
+  E.emptyState.style.display = 'none';
+  E.scriptText.style.display = 'block';
+
+  // Tokenise preserving whitespace/line breaks
+  raw.split(/(\s+)/).forEach(tok => {
+    if (/^\s+$/.test(tok)) {
+      if (tok.includes('\n')) {
+        E.scriptText.appendChild(document.createElement('br'));
+        if ((tok.match(/\n/g) || []).length > 1)
+          E.scriptText.appendChild(document.createElement('br'));
+      } else {
+        E.scriptText.appendChild(document.createTextNode(' '));
+      }
+    } else {
+      const span = document.createElement('span');
+      span.className = 'w';
+      span.textContent = tok;
+      span.dataset.i = S.words.length;
+      S.words.push({ text: tok, clean: cleanWord(tok), el: span });
+      E.scriptText.appendChild(span);
+    }
+  });
+
+  E.btnStart.disabled = false;
+  E.scroller.scrollTop = 0;
+  updateProgress();
+}
+
+function cleanWord(w) {
+  return w.toLowerCase().replace(/[^a-z0-9']/g, '');
+}
+
+// ─── Fuzzy word match (allow 1-char error) ────────────────────────────────────
+function isMatch(spoken, script) {
+  if (!script) return false;
+  if (spoken === script) return true;
+  if (Math.abs(spoken.length - script.length) > 2) return false;
+  let diff = 0;
+  for (let i = 0; i < Math.min(spoken.length, script.length); i++)
+    if (spoken[i] !== script[i]) diff++;
+  diff += Math.abs(spoken.length - script.length);
+  return diff <= 1;
+}
+
+// ─── Speech recognition ───────────────────────────────────────────────────────
+function initSpeech() {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) { console.warn('SpeechRecognition not available'); return; }
+
+  const r = new SR();
+  r.continuous = true;
+  r.interimResults = true;
+  r.lang = 'en-US';
+
+  r.onresult = ev => {
+    if (S.manualPause) return;
+    clearSilence();
+
+    // Auto-resume on incoming speech
+    if (S.paused && !S.manualPause) resumeRecording();
+
+    for (let i = ev.resultIndex; i < ev.results.length; i++) {
+      if (ev.results[i].isFinal) {
+        handleTranscript(ev.results[i][0].transcript);
+        armSilence();
+      }
+    }
+  };
+
+  r.onspeechend = () => armSilence(900);
+
+  r.onend = () => {
+    if (S.recording && !S.manualPause) {
+      try { r.start(); } catch (_) {}
+    }
+  };
+
+  r.onerror = e => {
+    if (e.error === 'no-speech') armSilence(800);
+  };
+
+  S.recognition = r;
+}
+
+function handleTranscript(transcript) {
+  if (!transcript || S.cursor >= S.words.length) return;
+
+  const spoken = transcript.toLowerCase()
+    .replace(/[^a-z0-9'\s]/g, '').split(/\s+/).filter(Boolean);
+
+  let idx = S.cursor;
+
+  for (const w of spoken) {
+    if (idx >= S.words.length) break;
+
+    // Look up to 5 ahead to handle skips/hesitations
+    let hit = -1;
+    for (let la = 0; la < 5 && idx + la < S.words.length; la++) {
+      if (isMatch(w, S.words[idx + la].clean)) { hit = la; break; }
+    }
+
+    if (hit >= 0) {
+      // Mark skipped words spoken
+      for (let s = idx; s < idx + hit; s++) S.words[s].el.className = 'w spoken';
+      S.words[idx + hit].el.className = 'w spoken';
+      idx = idx + hit + 1;
+    } else {
+      // Flag current word as mistake
+      if (idx < S.words.length) S.words[idx].el.className = 'w mistake';
+    }
+  }
+
+  if (idx !== S.cursor) moveCursor(idx);
+}
+
+function moveCursor(newIdx) {
+  // De-highlight old current
+  if (S.cursor < S.words.length) {
+    const prev = S.words[S.cursor].el;
+    if (prev.className === 'w current') prev.className = 'w';
+  }
+
+  S.cursor = newIdx;
+
+  if (S.cursor < S.words.length) {
+    S.words[S.cursor].el.className = 'w current';
+    scrollToWord(S.cursor);
+  }
+
+  updateProgress();
+
+  if (S.cursor >= S.words.length) {
+    setStatus('Script complete 🎉', 'done');
+  }
+}
+
+function scrollToWord(idx) {
+  if (idx >= S.words.length) return;
+  const wordEl = S.words[idx].el;
+  const scr = E.scroller;
+  const wRect = wordEl.getBoundingClientRect();
+  const sRect = scr.getBoundingClientRect();
+  const target = scr.scrollTop + (wRect.top - sRect.top) - sRect.height * 0.42;
+  scr.scrollTo({ top: target, behavior: 'smooth' });
+}
+
+// ─── Silence timer ─────────────────────────────────────────────────────────────
+function armSilence(ms = 1600) {
+  clearSilence();
+  S.silenceTimer = setTimeout(() => {
+    if (S.recording && !S.paused && !S.manualPause) autoPause();
+  }, ms);
+}
+
+function clearSilence() {
+  clearTimeout(S.silenceTimer);
+  S.silenceTimer = null;
+}
+
+// ─── Recording lifecycle ──────────────────────────────────────────────────────
+function startRecording() {
+  if (!S.stream) return;
+
+  S.chunks = [];
+  S.recording = true;
+  S.paused = false;
+  S.manualPause = false;
+  S.cursor = 0;
+
+  S.words.forEach(w => { w.el.className = 'w'; });
+  if (S.words.length) {
+    S.words[0].el.className = 'w current';
+    scrollToWord(0);
+  }
+
+  const mime = bestMime();
+  S.recorder = new MediaRecorder(S.stream, mime ? { mimeType: mime } : {});
+  S.recorder.ondataavailable = e => { if (e.data.size > 0) S.chunks.push(e.data); };
+  S.recorder.onstop = buildDownload;
+  S.recorder.start(100);
+
+  if (S.recognition) { try { S.recognition.start(); } catch (_) {} }
+
+  E.btnStart.style.display = 'none';
+  E.btnPause.style.display = 'inline-block';
+  E.btnStop.style.display = 'inline-block';
+  E.btnDownload.style.display = 'none';
+  E.recDot.classList.add('on');
+  E.pauseVeil.classList.remove('on');
+  setStatus('● REC', 'recording');
+  updateProgress();
+}
+
+function autoPause() {
+  if (!S.recording || S.paused) return;
+  S.paused = true;
+  if (S.recorder?.state === 'recording') S.recorder.pause();
+  E.recDot.classList.remove('on');
+  E.pauseVeil.classList.add('on');
+  setStatus('⏸ Paused', 'paused');
+  E.btnPause.textContent = '▶ Resume';
+}
+
+function togglePause() {
+  if (!S.recording) return;
+
+  if (S.paused) {
+    // Resume
+    S.paused = false;
+    S.manualPause = false;
+    if (S.recorder?.state === 'paused') S.recorder.resume();
+    if (S.recognition) { try { S.recognition.start(); } catch (_) {} }
+    E.recDot.classList.add('on');
+    E.pauseVeil.classList.remove('on');
+    setStatus('● REC', 'recording');
+    E.btnPause.textContent = '⏸ Pause';
+  } else {
+    // Manual pause
+    S.paused = true;
+    S.manualPause = true;
+    clearSilence();
+    if (S.recorder?.state === 'recording') S.recorder.pause();
+    if (S.recognition) { try { S.recognition.stop(); } catch (_) {} }
+    E.recDot.classList.remove('on');
+    E.pauseVeil.classList.add('on');
+    setStatus('⏸ Paused', 'paused');
+    E.btnPause.textContent = '▶ Resume';
+  }
+}
+
+function stopRecording() {
+  if (!S.recording) return;
+  S.recording = false;
+  S.paused = false;
+  S.manualPause = false;
+  clearSilence();
+
+  if (S.recognition) { try { S.recognition.stop(); } catch (_) {} }
+  if (S.recorder && S.recorder.state !== 'inactive') S.recorder.stop();
+
+  E.btnStart.style.display = 'inline-block';
+  E.btnPause.style.display = 'none';
+  E.btnStop.style.display = 'none';
+  E.btnPause.textContent = '⏸ Pause';
+  E.recDot.classList.remove('on');
+  E.pauseVeil.classList.remove('on');
+  setStatus('Stopped', '');
+}
+
+function buildDownload() {
+  if (!S.chunks.length) return;
+  const blob = new Blob(S.chunks, { type: S.recorder.mimeType || 'video/webm' });
+  const url = URL.createObjectURL(blob);
+  E.btnDownload.style.display = 'inline-block';
+  E.btnDownload.onclick = () => {
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `take-${new Date().toISOString().slice(0,19).replace(/:/g,'-')}.webm`;
+    a.click();
+  };
+}
+
+function bestMime() {
+  const candidates = [
+    'video/webm;codecs=vp9,opus',
+    'video/webm;codecs=vp8,opus',
+    'video/webm',
+    'video/mp4',
+  ];
+  return candidates.find(t => MediaRecorder.isTypeSupported(t)) || null;
+}
+
+// ─── UI helpers ───────────────────────────────────────────────────────────────
+function setStatus(text, cls) {
+  E.status.textContent = text;
+  E.status.className = cls || '';
+}
+
+function updateProgress() {
+  if (!S.words.length) { E.progress.textContent = ''; return; }
+  const pct = Math.round(S.cursor / S.words.length * 100);
+  E.progress.textContent = `${S.cursor} / ${S.words.length} words · ${pct}%`;
+}
+
+// ─── Draggable PiP ────────────────────────────────────────────────────────────
+(function makeDraggable(el) {
+  let ox, oy, drag = false;
+  el.addEventListener('mousedown', e => {
+    drag = true; ox = e.clientX - el.offsetLeft; oy = e.clientY - el.offsetTop;
+    el.style.right = 'auto'; el.style.bottom = 'auto';
+    el.style.cursor = 'grabbing';
+  });
+  document.addEventListener('mousemove', e => {
+    if (!drag) return;
+    const p = el.parentElement;
+    const x = Math.max(0, Math.min(p.clientWidth  - el.offsetWidth,  e.clientX - ox));
+    const y = Math.max(0, Math.min(p.clientHeight - el.offsetHeight, e.clientY - oy));
+    el.style.left = x + 'px'; el.style.top = y + 'px';
+  });
+  document.addEventListener('mouseup', () => { drag = false; el.style.cursor = 'move'; });
+})(E.pip);
+
+// ─── Event wiring ─────────────────────────────────────────────────────────────
+E.btnLoad.addEventListener('click', () => E.modalBg.classList.add('open'));
+E.btnLoadInline.addEventListener('click', () => E.modalBg.classList.add('open'));
+E.btnCancel.addEventListener('click', () => E.modalBg.classList.remove('open'));
+E.modalBg.addEventListener('click', e => { if (e.target === E.modalBg) E.modalBg.classList.remove('open'); });
+
+E.btnConfirm.addEventListener('click', () => {
+  loadScript(E.scriptInput.value);
+  E.modalBg.classList.remove('open');
+});
+E.scriptInput.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && e.ctrlKey) {
+    loadScript(E.scriptInput.value);
+    E.modalBg.classList.remove('open');
+  }
+});
+
+E.btnStart.addEventListener('click', startRecording);
+E.btnPause.addEventListener('click', togglePause);
+E.btnStop.addEventListener('click', stopRecording);
+
+E.btnMirror.addEventListener('click', () => {
+  E.btnMirror.classList.toggle('on');
+  E.main.classList.toggle('mirrored');
+});
+
+E.speedRange.addEventListener('input', () => {
+  S.scrollSpeed = parseFloat(E.speedRange.value);
+  E.speedVal.textContent = S.scrollSpeed.toFixed(1) + '×';
+});
+
+// Keyboard shortcuts (Space = pause/resume, R = record, S = stop)
+document.addEventListener('keydown', e => {
+  if (e.target === E.scriptInput) return;
+  if (e.code === 'Space') { e.preventDefault(); if (S.recording) togglePause(); }
+  if (e.code === 'KeyR' && !S.recording && !E.btnStart.disabled) startRecording();
+  if (e.code === 'KeyS' && S.recording) stopRecording();
+});
+
+// ─── Boot ─────────────────────────────────────────────────────────────────────
+initCamera();
+initSpeech();
+setStatus('Ready');
+</script>
+
+</body>
+</html>
